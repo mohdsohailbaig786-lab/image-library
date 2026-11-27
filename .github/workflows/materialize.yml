@@ -1,0 +1,43 @@
+name: Materialize library images
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/materialize.yml'
+permissions:
+  contents: write
+jobs:
+  assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-save --package-lock=false playwright@1.58.2
+      - run: npx playwright install --with-deps chromium
+      - name: Save assets and improve downloads
+        run: |
+          cat > /tmp/materialize.cjs <<'SCRIPT'
+          const fs=require('fs');
+          const {chromium}=require('playwright');
+          (async()=>{
+          const browser=await chromium.launch({headless:true});const page=await browser.newPage();
+          await page.goto('https://mohdsohailbaig786-lab.github.io/image-library/',{waitUntil:'domcontentloaded'});
+          await page.waitForSelector('#s10 .card');
+          fs.mkdirSync('assets/generated',{recursive:true});fs.mkdirSync('assets/previews',{recursive:true});
+          const generated=await page.locator('#s2 img,#s5 img,#s7 img,#s8 img').evaluateAll(imgs=>imgs.map(im=>({src:im.src,section:im.closest('section').id,name:im.alt})));
+          const counts={};for(const im of generated){const n=counts[im.section]=(counts[im.section]||0)+1;let file=im.section==='s2'?'overlay-'+n:im.section==='s5'?'pattern-'+n:im.section==='s8'?'template-'+n:n<=3?'banner-'+n:n<=6?'end-screen-'+(n-3):'logo-'+(n-6);if(!im.src.startsWith('data:image/png;base64,'))throw Error('Unexpected generated source');fs.writeFileSync('assets/generated/'+file+'.png',Buffer.from(im.src.split(',')[1],'base64'));}
+          const stocks=await page.locator('#s0 img,#s1 img').evaluateAll(imgs=>imgs.map(im=>({src:im.src,section:im.closest('section').id})));
+          for(const im of stocks){const data=await page.evaluate(async ({src,section})=>{const im=new Image();im.src=src;await im.decode();const c=document.createElement('canvas');c.width=section==='s0'?360:400;c.height=section==='s0'?640:400;const z=Math.max(c.width/im.width,c.height/im.height);c.getContext('2d').drawImage(im,(c.width-im.width*z)/2,(c.height-im.height*z)/2,im.width*z,im.height*z);return c.toDataURL('image/jpeg',.8).split(',')[1]},{...im});fs.writeFileSync('assets/previews/'+im.src.split('/').pop().replace(/\.[^.]+$/,'.jpg'),Buffer.from(data,'base64'));}
+          await browser.close();
+          let html=fs.readFileSync('index.html','utf8');for(const [from,to] of [["draw('overlay',i,1000,1000)","'assets/generated/overlay-'+(i+1)+'.png'"],["draw('pattern',i,1200,1200)","'assets/generated/pattern-'+(i+1)+'.png'"],["draw('banner',i,2560,1440)","'assets/generated/banner-'+(i+1)+'.png'"],["draw('end',i,1920,1080)","'assets/generated/end-screen-'+(i+1)+'.png'"],["draw('logo',i,1600,700)","'assets/generated/logo-'+(i+1)+'.png'"],["draw('template',i,900,1600)","'assets/generated/template-'+(i+1)+'.png'"],["assets.push({name:n,src,file,crop})","assets.push({name:n,src,file,crop:null})"],["esc(src)+'\" alt=","esc(crop?'assets/previews/'+src.split('/').pop().replace(/\\.[^.]+$/,'.jpg'):src)+'\" alt="],["c.lastElementChild.innerHTML+=info;","c.lastElementChild.innerHTML+=info+'<p><a class=\"save\" download=\"'+esc(src.split('/').pop())+'\" href=\"'+esc(src)+'\">Download</a></p>';"],["9:16 preview aur JPEG80 crop export.","9:16 stored lightweight preview; Download se original file."],["square preview aur JPEG80 crop export.","Stored square preview; Download se original file."]]){if(!html.includes(from))throw Error('Missing patch '+from);html=html.replace(from,to);}fs.writeFileSync('index.html',html);console.log('Stored',generated.length,'generated assets and',stocks.length,'previews');})();
+          SCRIPT
+          NODE_PATH="$GITHUB_WORKSPACE/node_modules" node /tmp/materialize.cjs
+      - name: Commit library images
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets/generated assets/previews index.html
+          git diff --cached --quiet || git commit -m 'Store generated assets and stock previews; add direct downloads'
+          git push
